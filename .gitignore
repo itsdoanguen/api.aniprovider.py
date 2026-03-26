@@ -1,3 +1,8 @@
 /venv
 /test
 /docs
+
+__pycache__/
+*.py[cod]
+*.sqlite3
+.env
