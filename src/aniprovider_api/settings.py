@@ -20,10 +20,13 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "corsheaders",
     "rest_framework",
-    "drf_spectacular",
     "core",
     "anime",
 ]
+
+# Only include drf_spectacular in development
+if DEBUG:
+    INSTALLED_APPS.insert(8, "drf_spectacular")
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -68,6 +71,19 @@ DATABASES = {
     }
 }
 
+if DATABASES["default"]["ENGINE"] == "django.db.backends.mysql":
+    mysql_options = {}
+    db_options_charset = os.getenv("DB_OPTIONS_CHARSET", "").strip()
+    db_init_command = os.getenv("DB_INIT_COMMAND", "").strip()
+
+    if db_options_charset:
+        mysql_options["charset"] = db_options_charset
+    if db_init_command:
+        mysql_options["init_command"] = db_init_command
+
+    if mysql_options:
+        DATABASES["default"]["OPTIONS"] = mysql_options
+
 if DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3":
     db_name = DATABASES["default"]["NAME"]
     if db_name and not os.path.isabs(db_name):
@@ -104,30 +120,37 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("ANIPROVIDER_API_RATE_LIMIT", "100/min"),
     },
-    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
-SPECTACULAR_SETTINGS = {
-    "TITLE": "AniProvider API",
-    "DESCRIPTION": "API for anime episode catalog and streaming sources",
-    "VERSION": "1.0.0",
-    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
-    "SCHEMA_PATH_PREFIX": r"/api",
-    "TAGS_SORTER": "alpha",
-    "SWAGGER_UI_SETTINGS": {
-        "persistAuthorization": True,
-    },
-    "APPEND_COMPONENTS": {
-        "securitySchemes": {
-            "ApiKeyAuth": {
-                "type": "apiKey",
-                "in": "header",
-                "name": "X-API-Key",
+# Only enable schema generation in development
+if DEBUG:
+    REST_FRAMEWORK["DEFAULT_SCHEMA_CLASS"] = "drf_spectacular.openapi.AutoSchema"
+
+# Only configure Swagger/docs in development
+if DEBUG:
+    SPECTACULAR_SETTINGS = {
+        "TITLE": "AniProvider API",
+        "DESCRIPTION": "API for anime episode catalog and streaming sources",
+        "VERSION": "1.0.0",
+        "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+        "SCHEMA_PATH_PREFIX": r"/api",
+        "TAGS_SORTER": "alpha",
+        "SWAGGER_UI_SETTINGS": {
+            "persistAuthorization": True,
+        },
+        "APPEND_COMPONENTS": {
+            "securitySchemes": {
+                "ApiKeyAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "X-API-Key",
+                }
             }
-        }
-    },
-    "SECURITY": [{"ApiKeyAuth": []}],
-}
+        },
+        "SECURITY": [{"ApiKeyAuth": []}],
+    }
+else:
+    SPECTACULAR_SETTINGS = {}
 
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
