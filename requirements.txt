@@ -10,3 +10,4 @@ requests>=2.32,<3.0
 selenium>=4.29,<5.0
 selenium-wire>=5.1,<6.0
 webdriver-manager>=4.0,<5.0
+PyMySQL>=1.1,<2.0
