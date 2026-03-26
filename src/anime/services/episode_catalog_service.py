@@ -1,4 +1,5 @@
 from datetime import timedelta
+import time
 
 import requests
 from django.conf import settings
@@ -21,6 +22,7 @@ class EpisodeCatalogService:
     def __init__(self) -> None:
         self.base_url = getattr(settings, "ANIPROVIDER_UPSTREAM_BASE_URL", "https://9animetv.to").rstrip("/")
         self.request_timeout = int(getattr(settings, "ANIPROVIDER_UPSTREAM_TIMEOUT_SECONDS", 20))
+        self.retry_count = int(getattr(settings, "ANIPROVIDER_UPSTREAM_RETRY_COUNT", 2))
         self.cache_ttl_seconds = int(getattr(settings, "ANIPROVIDER_EPISODE_TTL_SECONDS", 600))
 
     def list_episodes(self, anime_id: str, refresh: bool = False) -> dict:
@@ -78,7 +80,7 @@ class EpisodeCatalogService:
         }
 
         try:
-            response = requests.get(watch_url, headers=headers, timeout=self.request_timeout)
+            response = self._http_get(watch_url, headers=headers)
         except requests.Timeout as exc:
             raise UpstreamTimeoutException(
                 "Cannot fetch anime episodes in time",
@@ -105,6 +107,28 @@ class EpisodeCatalogService:
                 details={"anime_id": anime_id},
             )
         return episodes
+
+    def _http_get(self, url: str, headers: dict | None = None, params: dict | None = None) -> requests.Response:
+        attempts = self.retry_count + 1
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return requests.get(url, headers=headers, params=params, timeout=self.request_timeout)
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exc = exc
+                if attempt == attempts:
+                    raise
+                time.sleep(0.3 * (2 ** (attempt - 1)))
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt == attempts:
+                    raise
+                time.sleep(0.2)
+
+        if last_exc:
+            raise last_exc
+        raise requests.RequestException("Unknown request failure")
 
     @transaction.atomic
     def _upsert(self, anime_id: str, crawled_items: list[dict]) -> list[dict]:

@@ -14,13 +14,16 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "corsheaders",
     "rest_framework",
+    "drf_spectacular",
     "core",
     "anime",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -76,10 +79,49 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "aniprovider-cache",
+    }
+}
+
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exceptions.global_exception_handler",
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("ANIPROVIDER_API_RATE_LIMIT", "100/min"),
+    },
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "AniProvider API",
+    "DESCRIPTION": "API for anime episode catalog and streaming sources",
+    "VERSION": "1.0.0",
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+    "SCHEMA_PATH_PREFIX": r"/api",
+    "TAGS_SORTER": "alpha",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "AniProvider API",
+    "DESCRIPTION": "API for anime episode catalog and streaming sources",
+    "VERSION": "1.0.0",
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+    "SCHEMA_PATH_PREFIX": r"/api",
+    "TAGS_SORTER": "alpha",
+}
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ANIPROVIDER_CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+CORS_ALLOW_ALL_ORIGINS = os.getenv("ANIPROVIDER_CORS_ALLOW_ALL", "false").lower() == "true"
 
 LOGGING = {
     "version": 1,
@@ -113,3 +155,5 @@ ANIPROVIDER_EPISODE_TTL_SECONDS = int(os.getenv("ANIPROVIDER_EPISODE_TTL_SECONDS
 ANIPROVIDER_SOURCE_TTL_SECONDS = int(os.getenv("ANIPROVIDER_SOURCE_TTL_SECONDS", "600"))
 ANIPROVIDER_UPSTREAM_BASE_URL = os.getenv("ANIPROVIDER_UPSTREAM_BASE_URL", "https://9animetv.to")
 ANIPROVIDER_UPSTREAM_TIMEOUT_SECONDS = int(os.getenv("ANIPROVIDER_UPSTREAM_TIMEOUT_SECONDS", "20"))
+ANIPROVIDER_UPSTREAM_RETRY_COUNT = int(os.getenv("ANIPROVIDER_UPSTREAM_RETRY_COUNT", "2"))
+ANIPROVIDER_API_KEY = os.getenv("ANIPROVIDER_API_KEY", "")

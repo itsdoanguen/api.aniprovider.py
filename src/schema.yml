@@ -1,0 +1,257 @@
+openapi: 3.0.3
+info:
+  title: AniProvider API
+  version: 1.0.0
+  description: API for anime episode catalog and streaming sources
+paths:
+  /api/animes/{anime_id}/episodes:
+    get:
+      operationId: animes_episodes_retrieve
+      description: |-
+        Get episodes for anime.
+
+        Args:
+            anime_id (str): The anime identifier (alphanumeric with hyphens, 1-128 chars)
+
+        Query Parameters:
+            refresh (bool): Whether to refresh cache (default: false)
+
+        Returns:
+            - 200: List of episodes with metadata
+            - 400: Invalid anime_id format
+            - 500: Upstream fetch failed or internal error
+      parameters:
+      - in: path
+        name: anime_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - animes
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/episodes/{episode_id}/sources:
+    get:
+      operationId: episodes_sources_retrieve
+      description: |-
+        Get streaming sources for episode.
+
+        Args:
+            episode_id (str): The episode identifier (alphanumeric with hyphens, 1-128 chars)
+
+        Query Parameters:
+            async (bool): Whether to use async/Celery mode (default: false)
+            refresh (bool): Whether to refresh cache (default: false)
+
+        Returns on sync mode:
+            - 200: List of streaming sources with stream/vtt links
+            - 400: Invalid episode_id or invalid query parameters
+            - 500: Upstream fetch failed or internal error
+
+        Returns on async mode:
+            - 200: Cached sources (if available and not refreshing)
+            - 202: Task enqueued, returns task_id for polling
+            - 400: Invalid episode_id
+            - 503: Cannot enqueue task (Celery/Redis unavailable)
+      parameters:
+      - in: path
+        name: episode_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - episodes
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/schema/:
+    get:
+      operationId: schema_retrieve
+      description: |-
+        OpenApi3 schema for this API. Format can be selected via content negotiation.
+
+        - YAML: application/vnd.oai.openapi
+        - JSON: application/vnd.oai.openapi+json
+      parameters:
+      - in: query
+        name: format
+        schema:
+          type: string
+          enum:
+          - json
+          - yaml
+      - in: query
+        name: lang
+        schema:
+          type: string
+          enum:
+          - af
+          - ar
+          - ar-dz
+          - ast
+          - az
+          - be
+          - bg
+          - bn
+          - br
+          - bs
+          - ca
+          - ckb
+          - cs
+          - cy
+          - da
+          - de
+          - dsb
+          - el
+          - en
+          - en-au
+          - en-gb
+          - eo
+          - es
+          - es-ar
+          - es-co
+          - es-mx
+          - es-ni
+          - es-ve
+          - et
+          - eu
+          - fa
+          - fi
+          - fr
+          - fy
+          - ga
+          - gd
+          - gl
+          - he
+          - hi
+          - hr
+          - hsb
+          - hu
+          - hy
+          - ia
+          - id
+          - ig
+          - io
+          - is
+          - it
+          - ja
+          - ka
+          - kab
+          - kk
+          - km
+          - kn
+          - ko
+          - ky
+          - lb
+          - lt
+          - lv
+          - mk
+          - ml
+          - mn
+          - mr
+          - ms
+          - my
+          - nb
+          - ne
+          - nl
+          - nn
+          - os
+          - pa
+          - pl
+          - pt
+          - pt-br
+          - ro
+          - ru
+          - sk
+          - sl
+          - sq
+          - sr
+          - sr-latn
+          - sv
+          - sw
+          - ta
+          - te
+          - tg
+          - th
+          - tk
+          - tr
+          - tt
+          - udm
+          - ug
+          - uk
+          - ur
+          - uz
+          - vi
+          - zh-hans
+          - zh-hant
+      tags:
+      - schema
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/vnd.oai.openapi:
+              schema:
+                type: object
+                additionalProperties: {}
+            application/yaml:
+              schema:
+                type: object
+                additionalProperties: {}
+            application/vnd.oai.openapi+json:
+              schema:
+                type: object
+                additionalProperties: {}
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/tasks/{task_id}:
+    get:
+      operationId: tasks_retrieve
+      description: |-
+        Get status of a source capture task.
+
+        Args:
+            task_id (str): The Celery task ID returned from async request
+
+        Returns:
+            - 200: Task status with result (if SUCCESS) or error (if FAILURE)
+            - 503: Task backend (Redis) unavailable
+      parameters:
+      - in: path
+        name: task_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid

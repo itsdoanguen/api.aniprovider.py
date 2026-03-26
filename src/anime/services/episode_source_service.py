@@ -1,5 +1,6 @@
 from datetime import timedelta, timezone as dt_timezone
 import re
+import time
 from urllib.parse import urlparse
 
 import requests
@@ -32,15 +33,11 @@ class EpisodeSourceService:
     def __init__(self) -> None:
         self.base_url = getattr(settings, "ANIPROVIDER_UPSTREAM_BASE_URL", "https://9animetv.to").rstrip("/")
         self.request_timeout = int(getattr(settings, "ANIPROVIDER_UPSTREAM_TIMEOUT_SECONDS", 20))
+        self.retry_count = int(getattr(settings, "ANIPROVIDER_UPSTREAM_RETRY_COUNT", 2))
         self.cache_ttl_seconds = int(getattr(settings, "ANIPROVIDER_SOURCE_TTL_SECONDS", 600))
 
     def get_sources(self, episode_id: str, refresh: bool = False) -> dict:
-        episode = Episode.objects.filter(data_id=episode_id).first()
-        if not episode:
-            raise EpisodeNotFoundException(
-                detail=f"Episode '{episode_id}' not found",
-                details={"episode_id": episode_id},
-            )
+        episode = self._get_episode_or_raise(episode_id)
 
         if not refresh:
             cached = self._load_from_cache(episode)
@@ -62,6 +59,40 @@ class EpisodeSourceService:
             "captured_at": aggregate["captured_at"],
             "meta": {"refreshed": True, "source": "rapidcloud_capture"},
         }
+
+    def get_cached_sources(self, episode_id: str) -> dict | None:
+        episode = self._get_episode_or_raise(episode_id)
+        cached = self._load_from_cache(episode)
+        if cached is None:
+            return None
+        return {
+            "episode_id": episode_id,
+            "stream_links": cached["stream_links"],
+            "vtt_links": cached["vtt_links"],
+            "captured_at": cached["captured_at"],
+            "meta": {"refreshed": False, "source": "mysql_cache"},
+        }
+
+    def capture_sources_for_task(self, episode_id: str) -> dict:
+        episode = self._get_episode_or_raise(episode_id)
+        source_urls = self._discover_source_urls(episode)
+        aggregate = self._capture_and_upsert(episode=episode, source_urls=source_urls)
+        return {
+            "episode_id": episode_id,
+            "stream_links": aggregate["stream_links"],
+            "vtt_links": aggregate["vtt_links"],
+            "captured_at": aggregate["captured_at"],
+            "meta": {"refreshed": True, "source": "rapidcloud_capture_async"},
+        }
+
+    def _get_episode_or_raise(self, episode_id: str) -> Episode:
+        episode = Episode.objects.filter(data_id=episode_id).first()
+        if not episode:
+            raise EpisodeNotFoundException(
+                detail=f"Episode '{episode_id}' not found",
+                details={"episode_id": episode_id},
+            )
+        return episode
 
     def _load_from_cache(self, episode: Episode) -> dict | None:
         now = timezone.now()
@@ -125,11 +156,10 @@ class EpisodeSourceService:
 
         servers_url = f"{self.base_url}/ajax/episode/servers"
         try:
-            servers_response = requests.get(
+            servers_response = self._http_get(
                 servers_url,
-                params={"episodeId": episode.data_id},
                 headers=headers,
-                timeout=self.request_timeout,
+                params={"episodeId": episode.data_id},
             )
         except requests.Timeout as exc:
             raise UpstreamTimeoutException("Cannot fetch server list in time", details={"episode_id": episode.data_id}) from exc
@@ -169,11 +199,10 @@ class EpisodeSourceService:
     def _fetch_getsources_url(self, server_id: str, headers: dict) -> str | None:
         source_url = f"{self.base_url}/ajax/episode/sources"
         try:
-            response = requests.get(
+            response = self._http_get(
                 source_url,
-                params={"id": server_id},
                 headers=headers,
-                timeout=self.request_timeout,
+                params={"id": server_id},
             )
         except requests.RequestException:
             return None
@@ -252,7 +281,7 @@ class EpisodeSourceService:
 
     def _fetch_payload(self, url: str, episode_id: str) -> dict:
         try:
-            response = requests.get(url, timeout=self.request_timeout)
+            response = self._http_get(url)
         except requests.Timeout as exc:
             raise UpstreamTimeoutException("getSources request timeout", details={"episode_id": episode_id, "url": url}) from exc
         except requests.RequestException as exc:
@@ -273,6 +302,28 @@ class EpisodeSourceService:
             raise CaptureFailedException("Unexpected getSources payload type", details={"episode_id": episode_id, "url": url})
 
         return payload
+
+    def _http_get(self, url: str, headers: dict | None = None, params: dict | None = None) -> requests.Response:
+        attempts = self.retry_count + 1
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return requests.get(url, headers=headers, params=params, timeout=self.request_timeout)
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exc = exc
+                if attempt == attempts:
+                    raise
+                time.sleep(0.3 * (2 ** (attempt - 1)))
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt == attempts:
+                    raise
+                time.sleep(0.2)
+
+        if last_exc:
+            raise last_exc
+        raise requests.RequestException("Unknown request failure")
 
 
 def _isoformat_utc(value) -> str:
