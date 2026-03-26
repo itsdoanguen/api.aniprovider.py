@@ -21,8 +21,12 @@ class RequestIDMiddleware(MiddlewareMixin):
         request._started_at = time.perf_counter()
         set_request_id(request_id)
 
+        # Public endpoints that don't require API key
+        public_paths = {"/api/docs/", "/api/redoc/", "/api/schema/"}
+        is_public = any(request.path.startswith(path) for path in public_paths)
+
         api_key = getattr(settings, "ANIPROVIDER_API_KEY", "").strip()
-        if api_key and request.path.startswith("/api/"):
+        if api_key and request.path.startswith("/api/") and not is_public:
             provided = (request.headers.get("X-API-Key") or "").strip()
             if provided != api_key:
                 return JsonResponse(
