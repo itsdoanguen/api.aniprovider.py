@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta, timezone as dt_timezone
+import logging
 import re
 import time
 from urllib.parse import urlparse
@@ -13,7 +15,9 @@ from core.error_codes import ErrorCode
 from core.exceptions import AniProviderException, UpstreamServiceException, UpstreamTimeoutException
 from crawler.parsers.source_payload_parser import extract_sources
 
-SERVER_ID_RE = re.compile(r'data-id="([^\"]+)"', re.IGNORECASE)
+logger = logging.getLogger(__name__)
+
+SERVER_ID_RE = re.compile(r'data-id\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
 EMBED_ID_RE = re.compile(r"/embed-2/v2/e-1/([^/?#]+)")
 
 
@@ -35,13 +39,27 @@ class EpisodeSourceService:
         self.request_timeout = int(getattr(settings, "ANIPROVIDER_UPSTREAM_TIMEOUT_SECONDS", 20))
         self.retry_count = int(getattr(settings, "ANIPROVIDER_UPSTREAM_RETRY_COUNT", 2))
         self.cache_ttl_seconds = int(getattr(settings, "ANIPROVIDER_SOURCE_TTL_SECONDS", 600))
+        self.max_parallel_fetch = int(getattr(settings, "ANIPROVIDER_SOURCE_FETCH_MAX_WORKERS", "4"))
+
+        self.http_session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
+        self.http_session.mount("http://", adapter)
+        self.http_session.mount("https://", adapter)
 
     def get_sources(self, episode_id: str, refresh: bool = False) -> dict:
+        started_at = time.perf_counter()
         episode = self._get_episode_or_raise(episode_id)
 
         if not refresh:
             cached = self._load_from_cache(episode)
             if cached is not None:
+                logger.info(
+                    "sources_request_complete episode_id=%s refreshed=%s source=%s duration_ms=%s",
+                    episode_id,
+                    False,
+                    "mysql_cache",
+                    int((time.perf_counter() - started_at) * 1000),
+                )
                 return {
                     "episode_id": episode_id,
                     "stream_links": cached["stream_links"],
@@ -52,6 +70,16 @@ class EpisodeSourceService:
 
         source_urls = self._discover_source_urls(episode)
         aggregate = self._capture_and_upsert(episode=episode, source_urls=source_urls)
+        logger.info(
+            "sources_request_complete episode_id=%s refreshed=%s source=%s duration_ms=%s discovered_urls=%s stream_links=%s vtt_links=%s",
+            episode_id,
+            True,
+            "rapidcloud_capture",
+            int((time.perf_counter() - started_at) * 1000),
+            len(source_urls),
+            len(aggregate["stream_links"]),
+            len(aggregate["vtt_links"]),
+        )
         return {
             "episode_id": episode_id,
             "stream_links": aggregate["stream_links"],
@@ -141,6 +169,7 @@ class EpisodeSourceService:
         }
 
     def _discover_source_urls(self, episode: Episode) -> list[str]:
+        started_at = time.perf_counter()
         watch_path = urlparse(episode.episode_url).path
         watch_url = f"{self.base_url}{watch_path}" if watch_path.startswith("/") else episode.episode_url
 
@@ -194,37 +223,55 @@ class EpisodeSourceService:
         if not source_urls:
             raise CaptureFailedException("No getSources URLs discovered", details={"episode_id": episode.data_id})
 
+        logger.info(
+            "sources_discovery_complete episode_id=%s server_ids=%s source_urls=%s duration_ms=%s",
+            episode.data_id,
+            len(server_ids),
+            len(source_urls),
+            int((time.perf_counter() - started_at) * 1000),
+        )
+
         return source_urls
 
     def _fetch_getsources_url(self, server_id: str, headers: dict) -> str | None:
         source_url = f"{self.base_url}/ajax/episode/sources"
-        try:
-            response = self._http_get(
-                source_url,
-                headers=headers,
-                params={"id": server_id},
-            )
-        except requests.RequestException:
-            return None
+        attempts = 2
 
-        if response.status_code >= 400:
-            return None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self._http_get(
+                    source_url,
+                    headers=headers,
+                    params={"id": server_id},
+                )
+            except requests.RequestException:
+                if attempt < attempts:
+                    time.sleep(0.2 * (2 ** (attempt - 1)))
+                continue
 
-        try:
-            payload = response.json()
-        except ValueError:
-            return None
+            if response.status_code >= 400:
+                if attempt < attempts:
+                    time.sleep(0.2 * (2 ** (attempt - 1)))
+                continue
 
-        link = payload.get("link")
-        if not isinstance(link, str):
-            data = payload.get("data")
-            if isinstance(data, dict):
-                link = data.get("link")
+            try:
+                payload = response.json()
+            except ValueError:
+                if attempt < attempts:
+                    time.sleep(0.2 * (2 ** (attempt - 1)))
+                continue
 
-        if not isinstance(link, str) or not link:
-            return None
+            link = payload.get("link")
+            if not isinstance(link, str):
+                data = payload.get("data")
+                if isinstance(data, dict):
+                    link = data.get("link")
 
-        return self._to_getsources_url(link)
+            if isinstance(link, str) and link:
+                return self._to_getsources_url(link)
+
+        logger.info("sources_discovery_skip_server server_id=%s", server_id)
+        return None
 
     def _to_getsources_url(self, embed_link: str) -> str | None:
         match = EMBED_ID_RE.search(embed_link)
@@ -235,6 +282,7 @@ class EpisodeSourceService:
 
     @transaction.atomic
     def _capture_and_upsert(self, episode: Episode, source_urls: list[str]) -> dict:
+        started_at = time.perf_counter()
         now = timezone.now()
         expires_at = now + timedelta(seconds=self.cache_ttl_seconds)
 
@@ -243,9 +291,31 @@ class EpisodeSourceService:
         stream_seen: set[str] = set()
         vtt_seen: set[str] = set()
 
-        for url in source_urls:
-            payload = self._fetch_payload(url=url, episode_id=episode.data_id)
-            row_streams, row_vtts = extract_sources(payload)
+        fetched_rows: list[dict] = []
+
+        workers = min(max(1, self.max_parallel_fetch), max(1, len(source_urls)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {
+                executor.submit(self._fetch_payload, url, episode.data_id): url
+                for url in source_urls
+            }
+
+            for future in as_completed(future_map):
+                url = future_map[future]
+                payload = future.result()
+                row_streams, row_vtts = extract_sources(payload)
+                fetched_rows.append(
+                    {
+                        "url": url,
+                        "payload": payload,
+                        "stream_links": row_streams,
+                        "vtt_links": row_vtts,
+                    }
+                )
+
+        for row in fetched_rows:
+            row_streams = row["stream_links"]
+            row_vtts = row["vtt_links"]
 
             for link in row_streams:
                 if link not in stream_seen:
@@ -258,13 +328,13 @@ class EpisodeSourceService:
                     vtt_links.append(link)
 
             EpisodeSource.objects.update_or_create(
-                source_url=url,
+                source_url=row["url"],
                 defaults={
                     "episode": episode,
                     "source_type": EpisodeSource.SOURCE_RAPIDCLOUD,
                     "response_status": 200,
                     "response_data": {
-                        "raw_payload": payload,
+                        "raw_payload": row["payload"],
                         "stream_links": row_streams,
                         "vtt_links": row_vtts,
                     },
@@ -272,6 +342,15 @@ class EpisodeSourceService:
                     "expires_at": expires_at,
                 },
             )
+
+        logger.info(
+            "sources_capture_complete episode_id=%s source_urls=%s workers=%s stored_rows=%s duration_ms=%s",
+            episode.data_id,
+            len(source_urls),
+            workers,
+            len(fetched_rows),
+            int((time.perf_counter() - started_at) * 1000),
+        )
 
         return {
             "stream_links": stream_links,
@@ -309,7 +388,7 @@ class EpisodeSourceService:
 
         for attempt in range(1, attempts + 1):
             try:
-                return requests.get(url, headers=headers, params=params, timeout=self.request_timeout)
+                return self.http_session.get(url, headers=headers, params=params, timeout=self.request_timeout)
             except (requests.Timeout, requests.ConnectionError) as exc:
                 last_exc = exc
                 if attempt == attempts:
