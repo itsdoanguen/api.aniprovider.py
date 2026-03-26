@@ -60,13 +60,18 @@ ASGI_APPLICATION = "aniprovider_api.asgi.application"
 DATABASES = {
     "default": {
         "ENGINE": os.getenv("DB_ENGINE", "django.db.backends.sqlite3"),
-        "NAME": os.getenv("DB_NAME", str(BASE_DIR / "db.sqlite3")),
+        "NAME": os.getenv("DB_NAME", "db.sqlite3"),
         "USER": os.getenv("DB_USER", ""),
         "PASSWORD": os.getenv("DB_PASSWORD", ""),
         "HOST": os.getenv("DB_HOST", ""),
         "PORT": os.getenv("DB_PORT", ""),
     }
 }
+
+if DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3":
+    db_name = DATABASES["default"]["NAME"]
+    if db_name and not os.path.isabs(db_name):
+        DATABASES["default"]["NAME"] = str(BASE_DIR / db_name)
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -109,15 +114,19 @@ SPECTACULAR_SETTINGS = {
     "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
     "SCHEMA_PATH_PREFIX": r"/api",
     "TAGS_SORTER": "alpha",
-}
-
-SPECTACULAR_SETTINGS = {
-    "TITLE": "AniProvider API",
-    "DESCRIPTION": "API for anime episode catalog and streaming sources",
-    "VERSION": "1.0.0",
-    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
-    "SCHEMA_PATH_PREFIX": r"/api",
-    "TAGS_SORTER": "alpha",
+    "SWAGGER_UI_SETTINGS": {
+        "persistAuthorization": True,
+    },
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "ApiKeyAuth": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "X-API-Key",
+            }
+        }
+    },
+    "SECURITY": [{"ApiKeyAuth": []}],
 }
 
 CORS_ALLOWED_ORIGINS = [
