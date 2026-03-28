@@ -1,5 +1,6 @@
 import re
 
+from django.conf import settings
 from celery.result import AsyncResult
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -99,6 +100,12 @@ class EpisodeSourcesView(APIView):
         service = self.service_class()
 
         if async_mode:
+            if not settings.ANIPROVIDER_ENABLE_ASYNC_CRAWL:
+                raise ServiceUnavailableException(
+                    detail="Async source crawling is disabled",
+                    details={"episode_id": episode_id},
+                )
+
             if not refresh:
                 cached = service.get_cached_sources(episode_id=episode_id)
                 if cached is not None:
@@ -143,6 +150,12 @@ class EpisodeSourceTaskStatusView(APIView):
             - 200: Task status with result (if SUCCESS) or error (if FAILURE)
             - 503: Task backend (Redis) unavailable
         """
+        if not settings.ANIPROVIDER_ENABLE_ASYNC_CRAWL:
+            raise ServiceUnavailableException(
+                detail="Task status is unavailable because async crawling is disabled",
+                details={"task_id": task_id},
+            )
+
         try:
             task = AsyncResult(task_id)
             state = task.state

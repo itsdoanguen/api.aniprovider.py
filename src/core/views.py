@@ -8,11 +8,21 @@ def live(request):
 
 
 def ready(request):
+    redis_enabled = bool(getattr(settings, "ANIPROVIDER_ENABLE_ASYNC_CRAWL", False))
+    require_redis_ready = bool(getattr(settings, "ANIPROVIDER_REQUIRE_REDIS_READY", False))
+
+    redis_ok = True
+    if redis_enabled:
+        redis_ok = _check_redis(settings.REDIS_URL)
+
     checks = {
         "database": _check_database(),
-        "redis": _check_redis(settings.REDIS_URL),
+        "redis": redis_ok,
+        "redis_enabled": redis_enabled,
+        "redis_required": require_redis_ready,
     }
-    healthy = all(checks.values())
+
+    healthy = checks["database"] and (not require_redis_ready or checks["redis"])
     status_code = 200 if healthy else 503
     return JsonResponse({"status": "ok" if healthy else "degraded", "checks": checks}, status=status_code)
 
